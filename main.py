@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from schemas import CreateRoomRequest, JoinRoomRequest, PlaybackControl, UploadUrlRequest
 from room_manager import room_manager
 from websocket_manager import manager
-from utils import generate_user_id, format_room_state
+from utils import generate_user_id, format_room_state, get_live_time
 from datetime import datetime
 import os
 import shutil
@@ -213,23 +213,27 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, user_id: str):
                 room.is_playing = True
                 room.current_time = data.get("current_time", 0.0)
                 room.last_update = datetime.now()
-                
+
                 if data.get("track_url"):
                     room.current_track = data["track_url"]
-                
+
                 await manager.broadcast_to_room({
                     "type": "play",
                     "data": {
                         "current_track": room.current_track,
-                        "current_time": room.current_time,
+                        "current_time": room.current_time,  # exact time client sent
                         "timestamp": room.last_update.isoformat()
                     }
                 }, room_id)
             
             elif message_type == "pause":
+                # Use the client-reported live time; fall back to our computed
+                # position if the client didn't send one (shouldn't happen).
+                live_at_pause = data.get("current_time", get_live_time(room))
                 room.is_playing = False
-                room.current_time = data.get("current_time", room.current_time)
-                
+                room.current_time = live_at_pause
+                room.last_update = datetime.now()
+
                 await manager.broadcast_to_room({
                     "type": "pause",
                     "data": {
@@ -240,7 +244,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, user_id: str):
             elif message_type == "seek":
                 room.current_time = data.get("current_time", 0.0)
                 room.last_update = datetime.now()
-                
+
                 await manager.broadcast_to_room({
                     "type": "seek",
                     "data": {
@@ -255,7 +259,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, user_id: str):
                     "data": {
                         "current_track": room.current_track,
                         "is_playing": room.is_playing,
-                        "current_time": room.current_time,
+                        "current_time": get_live_time(room),  # real position
                         "last_update": room.last_update.isoformat()
                     }
                 }, room_id, user_id)
